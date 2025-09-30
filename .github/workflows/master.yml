@@ -35,8 +35,8 @@ jobs:
               fi
             else
               git checkout -b $branch $remote_branch
+              git fetch origin $branch || true
             fi
-          
             git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} $branch --force-with-lease
           done
 

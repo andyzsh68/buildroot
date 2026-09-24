@@ -61,3 +61,47 @@ boots").
 Any other markdown notes produced along the way (by me or by dispatched
 subagents) go under `agents/`, per repo owner's instruction, not under
 `docs/`.
+
+## Outcome
+
+Boots to login: TF-A -> OP-TEE (FF-A, SPMC at S-EL1) -> U-Boot -> Linux.
+See commits `64f13888ea` (build green) and `a5d53554d1` (boot green) for
+the full list of fixes. Summary of what wasn't obvious going in:
+
+- `boot/arm-trusted-firmware/arm-trusted-firmware.mk` appended
+  `ADDITIONAL_VARIABLES` *before* its own `SPD=opteed` default -- on the
+  make command line the last assignment wins, so a board couldn't
+  override SPD at all until this was reordered.
+- TF-A's `qemu` platform only loads the OP-TEE pager/paged images
+  (BL32_EXTRA1/2) when `SPMC_OPTEE=1` is defined; `SPD=spmd` alone
+  leaves BL2 skipping them (`BL2: Skip loading image id 21`), and BL31
+  ends up jumping into a bare 28-byte header with no code behind it.
+- FF-A needs a manifest (`TOS_FW_CONFIG`) describing the SPMC (OP-TEE)
+  to TF-A's SPMD -- `board/qemu/aarch64-virt/spmc_manifest.dts`, wired
+  via `QEMU_TOS_FW_CONFIG_DTS`.
+- TF-A's `qemu` platform defaults to GICv2. FF-A/SPMD needs
+  `register_interrupt_type_handler(INTR_TYPE_S_EL1, ...)`, which GICv2
+  can't do (no S-EL1/EL3 group distinction) -- silently panics because
+  release builds have `ENABLE_ASSERTIONS=0`. Needed GICv3 on *both*
+  sides: `QEMU_USE_GIC_DRIVER=QEMU_GICV3` (TF-A) and `CFG_ARM_GICV3=y`
+  (OP-TEE OS -- without it OP-TEE's own GIC driver still assumes v2 and
+  hangs polling registers that don't exist), plus `gic-version=3` on
+  the QEMU command line.
+- Buildroot doesn't retrigger a package rebuild just because one of its
+  *dependencies* changed after the fact once it's already built once
+  (e.g. changing OP-TEE OS config doesn't automatically relink TF-A's
+  FIP with the new `tee.bin`) -- `make arm-trusted-firmware-dirclean`
+  is needed after any OP-TEE OS config change that affects the images
+  TF-A embeds.
+
+Debugging method: attached gdb to QEMU's `-s` gdbserver on a hang,
+resolved the frozen PC against the TF-A/OP-TEE `.elf` with addr2line to
+get the actual panic/hang site, then read the corresponding TF-A source
+to find the missing build flag. Plain guesswork from the (correct, but
+incomplete) high-level architecture would not have found the
+`SPMC_OPTEE` or GICv3 requirements -- both are undocumented outside the
+TF-A source itself.
+
+Known minor open issue (not investigated, unrelated to FF-A): the stock
+optee-client `S30tee-supplicant` init script's `tee-supplicant -d`
+daemonize fails (`make_daemon(): -1`) in this QEMU environment.

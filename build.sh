@@ -1,0 +1,2 @@
+make qemu_aarch64_virt_defconfig
+make menuconfig

@@ -63,7 +63,6 @@ ARM_TRUSTED_FIRMWARE_MAKE_OPTS += \
 	$(if $(VERBOSE),V=1) \
 	CROSS_COMPILE="$(TARGET_CROSS)" \
 	BUILD_STRING=$(ARM_TRUSTED_FIRMWARE_VERSION) \
-	$(call qstrip,$(BR2_TARGET_ARM_TRUSTED_FIRMWARE_ADDITIONAL_VARIABLES)) \
 	PLAT=$(ARM_TRUSTED_FIRMWARE_PLATFORM) \
 	TARGET_BOARD=$(ARM_TRUSTED_FIRMWARE_TARGET_BOARD) \
 	HOSTCC="$(HOSTCC) $(HOST_CFLAGS) $(HOST_LDFLAGS)"
@@ -146,6 +145,13 @@ ifeq ($(BR2_TARGET_MV_DDR_MARVELL),y)
 ARM_TRUSTED_FIRMWARE_MAKE_OPTS += MV_DDR_PATH=$(MV_DDR_MARVELL_DIR)
 ARM_TRUSTED_FIRMWARE_DEPENDENCIES += mv-ddr-marvell
 endif
+
+# Keep this last: on the make command line, the last assignment of a
+# variable wins, so board-provided ADDITIONAL_VARIABLES must be appended
+# after all the package's own MAKE_OPTS defaults (e.g. SPD=opteed below) in
+# order to be able to override them (e.g. to use SPD=spmd for FF-A).
+ARM_TRUSTED_FIRMWARE_MAKE_OPTS += \
+	$(call qstrip,$(BR2_TARGET_ARM_TRUSTED_FIRMWARE_ADDITIONAL_VARIABLES))
 
 ARM_TRUSTED_FIRMWARE_MAKE_TARGETS = all
 

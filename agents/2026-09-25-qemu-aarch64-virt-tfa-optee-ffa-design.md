@@ -105,3 +105,35 @@ TF-A source itself.
 Known minor open issue (not investigated, unrelated to FF-A): the stock
 optee-client `S30tee-supplicant` init script's `tee-supplicant -d`
 daemonize fails (`make_daemon(): -1`) in this QEMU environment.
+
+## Update 2026-09-28: kernel-side TEE driver was never enabled
+
+The above was wrong -- that "minor issue" *was* the FF-A work being
+incomplete, not something separate. `board/qemu/aarch64-virt/linux.config`
+never had `CONFIG_TEE`/`CONFIG_OPTEE` set, so there was no `/dev/teepriv0`
+at all; `tee-supplicant -d /dev/teepriv0` failing to daemonize was just
+what opening a nonexistent device during that path looks like from the
+outside (no clearer error message). All the secure-world work above was
+necessary but not sufficient -- the normal-world kernel driver needs
+enabling too.
+
+Also, enabling `CONFIG_TEE`+`CONFIG_OPTEE` alone is not enough for the
+FF-A transport specifically: `drivers/tee/optee/ffa_abi.c` only calls
+`ffa_register()` behind `IS_REACHABLE(CONFIG_ARM_FFA_TRANSPORT)` -- i.e.
+the OP-TEE driver's FF-A backend rides on top of the generic Arm FF-A bus
+driver (`drivers/firmware/arm_ffa/`), which is a separate Kconfig symbol
+that isn't selected by `CONFIG_OPTEE` and has no relation to
+`CONFIG_ARM_SMCCC`/the legacy SMC ABI OP-TEE also supports. Without it,
+the FF-A registration is silently compiled out and the driver falls
+through with no probe and no error message.
+
+Fix: added to `board/qemu/aarch64-virt/linux.config`:
+
+    CONFIG_TEE=y
+    CONFIG_OPTEE=y
+    CONFIG_ARM_FFA_TRANSPORT=y
+
+Verified via `dmesg`: `optee: revision 4.6`, `/dev/tee0` and
+`/dev/teepriv0` both present, `tee-supplicant` now reports `OK` instead of
+`FAIL` on boot.
+

@@ -17,3 +17,11 @@ line above) -- GICv2 cannot register the S-EL1 secure interrupt handler
 FF-A/SPMD needs, and TF-A panics silently (release builds have
 ENABLE_ASSERTIONS=0) if it can't.
 
+On the Linux side, the OP-TEE driver's FF-A backend
+(drivers/tee/optee/ffa_abi.c) only registers itself when
+CONFIG_ARM_FFA_TRANSPORT (the generic Arm FF-A bus driver) is enabled --
+CONFIG_TEE + CONFIG_OPTEE alone are not enough, and there is no error
+message if it's missing, just no /dev/tee0 or /dev/teepriv0. All three
+are set in board/qemu/aarch64-virt/linux.config.
+
+

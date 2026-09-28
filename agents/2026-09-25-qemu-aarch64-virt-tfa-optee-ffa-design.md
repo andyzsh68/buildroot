@@ -137,3 +137,40 @@ Verified via `dmesg`: `optee: revision 4.6`, `/dev/tee0` and
 `/dev/teepriv0` both present, `tee-supplicant` now reports `OK` instead of
 `FAIL` on boot.
 
+## Update 2026-09-28: added optee-test/optee-examples, found an SVE bug
+
+Added `BR2_PACKAGE_OPTEE_TEST=y` + `BR2_PACKAGE_OPTEE_EXAMPLES=y`
+(needs `BR2_TOOLCHAIN_BUILDROOT_CXX=y` for xtest's C++ bits --
+`BR2_INSTALL_LIBSTDCPP` itself has no prompt, it's only reachable via
+that select; setting it directly in a defconfig is silently dropped by
+`olddefconfig`). Bumped rootfs 350M -> 450M for the added binaries/TAs.
+
+First real invocation (`optee_example_hello_world`) hard-hung the whole
+VM -- confirmed with gdb (same technique as before) that it's yet
+another *silent* TF-A panic (`report_unhandled_exception ->
+plat_panic_handler`, `ESR_EL3` EC=0x07: SVE/SIMD/FP access trapped to
+EL3), not a driver/kernel deadlock, and reproduces identically at
+`-smp 1` (so not an SMP race).
+
+Cause: cortex-a710 implements SVE. TF-A's `qemu` platform.mk defaults
+`ENABLE_SVE_FOR_NS=2` (runtime-detect, should let normal-world use SVE
+without EL3 trapping), but the SPMD/FF-A world-switch path
+(`spmd_smc_handler` et al, as opposed to the older SPD=opteed dispatch
+code) does not correctly restore CPTR_EL3's SVE-enable state after a
+round trip into OP-TEE. So the first SIMD/FP/SVE instruction executed
+by *anything* in the normal world after any OP-TEE call (in practice:
+whatever libc routine the first ioctl to /dev/teepriv0 happens to pull
+in) traps straight to EL3 and panics, silently.
+
+Did not attempt a TF-A source fix (that's arch/context-management code
+in `bl31/`, `services/std_svc/spmd/`, and `lib/extensions/sve/` --
+plausible upstream bug or missing SVE-context-save support for the
+SPMD path specifically, out of scope to chase further here). Practical
+workaround: disable SVE on the QEMU guest CPU entirely --
+`-cpu cortex-a710,sve=off` -- so Linux never detects/uses SVE and the
+trap can't occur. Confirmed the fix with
+optee_example_{hello_world,aes,random,secure_storage} and
+`xtest -t regression 1001 1002 1004` (crypto self-tests, so SIMD-heavy
+code paths specifically) all returning 0 with SVE off, at both -smp 1
+and -smp 4.
+

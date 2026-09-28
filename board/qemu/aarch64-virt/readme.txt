@@ -1,6 +1,6 @@
 Run the emulation with:
 
-  qemu-system-aarch64 -M virt,secure=on,gic-version=3 -cpu cortex-a710 -m 2048 -nographic -smp 4 -bios output/images/flash.bin -kernel output/images/Image -append "rootwait root=/dev/vda console=ttyAMA0" -netdev user,id=eth0 -device virtio-net-device,netdev=eth0 -nic user,model=e1000,hostfwd=tcp::2222-:22 -drive file=output/images/rootfs.ext4,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 # qemu_aarch64_virt_defconfig
+  qemu-system-aarch64 -M virt,secure=on,gic-version=3 -cpu cortex-a710,sve=off -m 2048 -nographic -smp 4 -bios output/images/flash.bin -kernel output/images/Image -append "rootwait root=/dev/vda console=ttyAMA0" -netdev user,id=eth0 -device virtio-net-device,netdev=eth0 -nic user,model=e1000,hostfwd=tcp::2222-:22 -drive file=output/images/rootfs.ext4,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 # qemu_aarch64_virt_defconfig
 
 The login prompt will appear in the terminal that started Qemu.
 
@@ -23,5 +23,19 @@ CONFIG_ARM_FFA_TRANSPORT (the generic Arm FF-A bus driver) is enabled --
 CONFIG_TEE + CONFIG_OPTEE alone are not enough, and there is no error
 message if it's missing, just no /dev/tee0 or /dev/teepriv0. All three
 are set in board/qemu/aarch64-virt/linux.config.
+
+`-cpu cortex-a710,sve=off` is required: cortex-a710 has SVE, and TF-A's
+SPMD/FF-A world-switch path does not correctly restore the EL3 SVE/FP
+trap configuration (CPTR_EL3) across a round trip into OP-TEE. Without
+sve=off, the first SIMD/FP/SVE instruction executed after any OP-TEE
+call (e.g. the first optee_client ioctl, which pulls in libc SIMD
+routines) takes an unhandled EC=0x07 exception straight to EL3 and
+panics silently (report_unhandled_exception -> plat_panic_handler,
+same silent-panic-in-release-build situation as the GICv2 issue above).
+Disabling SVE on the guest CPU sidesteps the bug entirely: Linux never
+detects/uses SVE, so the trap can't happen. Confirmed working with
+optee_example_{hello_world,aes,random,secure_storage} and
+`xtest -t regression` (see BR2_PACKAGE_OPTEE_TEST /
+BR2_PACKAGE_OPTEE_EXAMPLES in the defconfig).
 
 

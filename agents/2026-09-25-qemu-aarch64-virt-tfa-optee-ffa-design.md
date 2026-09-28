@@ -174,3 +174,65 @@ optee_example_{hello_world,aes,random,secure_storage} and
 code paths specifically) all returning 0 with SVE off, at both -smp 1
 and -smp 4.
 
+## Update 2026-09-28 (later): the sve=off "fix" above was wrong
+
+User ran the actual full `xtest -t regression` suite (not the small
+subset above) and hit a full-system hang -- all 4 vCPUs idling,
+kernel RCU-stall warnings -- at `regression_1006` ("Test Basic OS
+features"). Reproducing it directly (via a tmux-hosted interactive
+QEMU session -- `expect` with output redirected to a plain file turned
+out to buffer unpredictably across multiple attempts and cost a lot of
+back-and-forth; tmux capture-pane was far more reliable for this kind
+of "run something, wait, inspect" loop) showed the hang is
+non-deterministic in *where* it lands (it happened at `1033.2`, a
+completely unrelated supplicant-plugin test, on one run) but has an
+identical signature every time: all 4 vCPU threads sitting in
+`cpu_do_idle` in the *kernel*, not stuck at a TF-A/secure-world address
+the way the earlier silent panics were.
+
+That address alone falsifies the "SPMD doesn't restore CPTR_EL3"
+theory from the previous update -- a CPU wedged in EL3 would show a
+TF-A address (like the `plat_panic_handler` hits before), not
+`cpu_do_idle`. Actual cause, found by chasing a *separate* symptom
+(sshd, udhcpc's helper, and the crond wrapper all crashing with
+"Illegal instruction" during normal boot, present even in the
+`sve=off` run that had otherwise looked fully working): pulled a core
+dump out of the running rootfs image with `debugfs -R "dump ..."`
+(no need to stop QEMU or touch the live disk) and pointed host gdb at
+it against the matching `output/build/openssh-*/sshd` build tree.
+Crash site: `initialize_server_options()`, instruction `mov z31.h, #0`
+-- an SVE instruction, in GCC's `-fzero-call-used-regs` register-
+clearing hardening for an ordinary struct-init function, nothing to do
+with crypto/SIMD algorithms at all. `BR2_cortex_a710` tunes GCC for a
+core that architecturally has SVE, so *any* package build (glibc
+included) may contain plain SVE instructions in unremarkable code.
+`sve=off` "fixed" the original hello_world panic because the trap only
+fires once SVE-capable code actually executes, but it broke every
+binary that happens to hit this codegen pattern on a CPU that no
+longer has SVE -- and when the binary that crashes is tee-supplicant,
+whatever OP-TEE call was waiting on an RPC to it hangs forever
+(uninterruptible), which is indistinguishable from a kernel-side
+deadlock from the outside, and can starve RCU system-wide given enough
+piled-up waiters. Two unrelated-looking symptoms (the OP-TEE hang, the
+random SIGILLs), one root cause.
+
+Real fix, from TF-A's own docs
+(docs/getting_started/build-options.rst): when `ENABLE_SVE_FOR_NS` is
+on (the qemu platform's default, =2), TF-A disables *secure-world*
+FP/SIMD access by default -- specifically to stop the secure world
+from corrupting live SVE Z-register state in the normal world (Z-regs
+alias the FP/SIMD V-regs). Since OP-TEE itself uses FP/SIMD internally
+(CFG_TA_FLOAT_SUPPORT=y TAs, optee_os's own crypto/memcpy), any call
+into OP-TEE trapped straight to EL3 and panicked -- that was the
+*actual* cause of the original hello_world hang, not an SPMD context-
+restore bug. Setting `ENABLE_SVE_FOR_SWD=1` in TF-A's
+ADDITIONAL_VARIABLES grants the secure world FP/SIMD access too (its
+only precondition is `ENABLE_SVE_FOR_NS != 0`, already true). Reverted
+`sve=off` (back to plain `-cpu cortex-a710`, SVE enabled, matching the
+toolchain). Confirmed: no more "Illegal instruction" anywhere in boot,
+optee_example_{hello_world,aes,random,secure_storage} all pass, and a
+full `xtest -t regression` run completes clean: 33665 subtests / 111
+test cases, 0 failed, 0 skipped (vs. 108-110 skipped in earlier partial
+runs -- CFG_TA_FLOAT_SUPPORT-gated tests were being silently skipped
+before, another symptom of the same root cause).
+
